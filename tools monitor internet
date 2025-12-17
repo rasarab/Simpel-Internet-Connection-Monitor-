@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Baba Internet Monitor</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+    }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      margin: 0; padding: 24px;
+      background: #0f172a; color: #e2e8f0;
+    }
+    .container { max-width: 720px; margin: 0 auto; }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    .status {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 12px; border-radius: 10px; font-weight: 600;
+    }
+    .online { background: #064e3b; color: #d1fae5; }
+    .offline { background: #7f1d1d; color: #fee2e2; }
+    .muted { background: #334155; color: #cbd5e1; }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    button {
+      background: #1f2937; color: #f1f5f9; border: 1px solid #334155;
+      padding: 10px 14px; border-radius: 10px; cursor: pointer;
+    }
+    button:hover { background: #111827; }
+    .small { font-size: 12px; opacity: 0.8; }
+    .card {
+      margin-top: 18px; padding: 14px; border: 1px solid #334155; border-radius: 12px;
+      background: #0b1220;
+    }
+    ul { margin: 8px 0 0; padding-left: 18px; }
+    code.kbd {
+      background: #0b1220; border: 1px solid #334155; padding: 2px 6px; border-radius: 6px;
+    }
+    a { color: #93c5fd; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Baba Internet Monitor</h1>
+    <div class="row">
+      <div id="statusBadge" class="status muted">Inisialisasi...</div>
+      <button id="enableAudioBtn" title="Aktifkan suara agar notifikasi berbicara">Aktifkan suara</button>
+      <span id="lastChecked" class="small"></span>
+    </div>
+
+    <div class="card">
+      <strong>Info:</strong>
+      <ul>
+        <li><strong>Suara:</strong> Klik <code class="kbd">Aktifkan suara</code> sekali agar browser mengizinkan audio.</li>
+        <li><strong>Deteksi:</strong> Menggunakan event online/offline + ping berkala 5 detik ke <em>about:blank</em> (tanpa internet tidak bisa memuat).</li>
+        <li><strong>Anti-duplikasi:</strong> Pesan suara hanya saat ada perubahan status.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <strong>Log status:</strong>
+      <ul id="logList"></ul>
+    </div>
+  </div>
+
+  <script>
+    // --- Util: timestamp lokal ---
+    function nowStr() {
+      try {
+        return new Date().toLocaleString('id-ID', {
+          hour12: false
+        });
+      } catch {
+        return new Date().toISOString();
+      }
+    }
+
+    // --- UI elements ---
+    const statusBadge = document.getElementById('statusBadge');
+    const lastChecked = document.getElementById('lastChecked');
+    const logList = document.getElementById('logList');
+    const enableAudioBtn = document.getElementById('enableAudioBtn');
+
+    // --- Audio control ---
+    let audioEnabled = false;
+    let lastSpokenStatus = null;
+
+    enableAudioBtn.addEventListener('click', () => {
+      audioEnabled = true;
+      speakText('Audio diaktifkan untuk Baba Internet Monitor.');
+      enableAudioBtn.textContent = 'Suara aktif';
+      enableAudioBtn.disabled = true;
+      enableAudioBtn.style.opacity = 0.7;
+      addLog('Audio diaktifkan');
+    });
+
+    function speakText(text) {
+      // Prefer speechSynthesis; fallback to beep
+      try {
+        if ('speechSynthesis' in window) {
+          const utter = new SpeechSynthesisUtterance(text);
+          // Prefer Indonesian voice if available
+          const voices = window.speechSynthesis.getVoices();
+          const idVoice = voices.find(v => /id-|Indonesian/i.test(v.lang)) || voices[0];
+          if (idVoice) utter.voice = idVoice;
+          utter.rate = 1.0; utter.pitch = 1.0; utter.volume = 1.0;
+          window.speechSynthesis.cancel(); // avoid overlap
+          window.speechSynthesis.speak(utter);
+        } else {
+          // Simple beep fallback
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          const o = ctx.createOscillator();
+          const g = ctx.createGain();
+          o.type = 'sine'; o.frequency.value = 880;
+          o.connect(g); g.connect(ctx.destination);
+          g.gain.setValueAtTime(0.001, ctx.currentTime);
+          g.gain.exponentialRampToValueAtTime(0.1, ctx.currentTime + 0.02);
+          o.start();
+          setTimeout(() => { g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.02); o.stop(); }, 300);
+        }
+      } catch (e) {
+        // Swallow errors silently to keep tool resilient
+      }
+    }
+
+    // --- Log helper ---
+    function addLog(msg) {
+      const li = document.createElement('li');
+      li.textContent = `[${nowStr()}] ${msg}`;
+      logList.prepend(li);
+    }
+
+    // --- Status rendering ---
+    function renderStatus(isOnline) {
+      if (isOnline === null) {
+        statusBadge.className = 'status muted';
+        statusBadge.textContent = 'Tidak diketahui';
+        return;
+      }
+      if (isOnline) {
+        statusBadge.className = 'status online';
+        statusBadge.textContent = 'Internet hidup';
+      } else {
+        statusBadge.className = 'status offline';
+        statusBadge.textContent = 'Internet terputus';
+      }
+    }
+
+    // --- Announce changes once ---
+    function announceStatus(isOnline) {
+      const statusKey = isOnline ? 'online' : 'offline';
+      if (!audioEnabled) return;
+      if (statusKey === lastSpokenStatus) return;
+      lastSpokenStatus = statusKey;
+
+      if (isOnline) {
+        speakText('Baba, Internet hidup lagi');
+      } else {
+        speakText('Baba. Internet terputus');
+      }
+    }
+
+    // --- Connectivity check ---
+    // Use navigator.onLine + lightweight fetch to confirm
+    async function confirmOnline() {
+      // Quick pessimistic paths
+      if (!navigator.onLine) return false;
+
+      // Try a very small request that requires network.
+      // about:blank cannot be fetched; use a same-origin no-cors ping to a data endpoint.
+      // We’ll attempt fetch to a tiny resource with cache-busting.
+      const url = `https://ipv4.icanhazip.com/?_=${Date.now()}`;
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 3000);
+        const res = await fetch(url, { mode: 'cors', cache: 'no-store', signal: ctrl.signal });
+        clearTimeout(t);
+        // If fetch succeeds and status is OK, consider online
+        return res.ok;
+      } catch {
+        return false;
+      }
+    }
+
+    let lastStatus = null; // null | true | false
+
+    async function updateStatus(trigger) {
+      const isOnline = await confirmOnline();
+      renderStatus(isOnline);
+      lastChecked.textContent = `Terakhir dicek: ${nowStr()}${trigger ? ' (' + trigger + ')' : ''}`;
+
+      if (lastStatus !== isOnline) {
+        addLog(isOnline ? 'Internet hidup' : 'Internet terputus');
+        announceStatus(isOnline);
+        lastStatus = isOnline;
+      }
+    }
+
+    // --- Event listeners for instant changes ---
+    window.addEventListener('online', () => updateStatus('event: online'));
+    window.addEventListener('offline', () => updateStatus('event: offline'));
+
+    // --- Polling every 5s to be robust ---
+    setInterval(() => updateStatus('poll'), 5000);
+
+    // --- Initial kick ---
+    (async () => {
+      renderStatus(null);
+      addLog('Memulai pemantauan...');
+      // Warm up voices (some browsers load lazily)
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.onvoiceschanged = () => {};
+      }
+      await updateStatus('init');
+    })();
+  </script>
+</body>
+</html>
